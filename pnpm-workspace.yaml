@@ -1,0 +1,9 @@
+packages:
+  - apps/api
+  - apps/web
+  - packages/shared
+allowBuilds:
+  argon2: true
+  esbuild: true
+minimumReleaseAgeExclude:
+  - vite@8.3.8

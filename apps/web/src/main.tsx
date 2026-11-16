@@ -1,0 +1,24 @@
+import React, { useEffect, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { WashingMachine, LayoutDashboard, ClipboardList, Users, Tags, Wallet, ShieldCheck, History, LogOut, UserRoundCog, Menu } from 'lucide-react';
+import type { Identity } from '@lav/shared';
+import { api, ApiError, companyId, selectCompany } from './api';
+import { Auth } from './auth';
+import { Customers, Services } from './catalog';
+import { Orders } from './orders';
+import { Dashboard, CashPage, Team, AuditPage, Platform } from './management';
+import { Button } from './components/ui/button';
+import './styles.css';
+
+function App() {
+  const [identity, setIdentity] = useState<Identity | null>(); const [error, setError] = useState(''); const [company, setCompany] = useState(companyId); const [page, setPage] = useState('dashboard'); const [menu, setMenu] = useState(false);
+  async function load() { setError(''); try { const me = await api<Identity>('/auth/me'); setIdentity(me); if (!me.memberships.some(m => m.companyId === companyId)) { const id = me.memberships[0]?.companyId ?? ''; selectCompany(id); setCompany(id); } } catch (e) { if (e instanceof ApiError && e.status === 401) setIdentity(null); else setError((e as Error).message); } }
+  useEffect(() => { void load(); }, []);
+  if (identity === undefined) return <main className="loading"><WashingMachine size={40}/><h1>Lavanda</h1>{error ? <><p role="alert">{error}</p><Button onClick={load}>Reintentar</Button></> : <p>Preparando tu espacio…</p>}</main>;
+  if (!identity) return <Auth ready={load}/>;
+  const membership = identity.memberships.find(m => m.companyId === company); const manage = membership?.role !== 'staff';
+  const nav = [{ id: 'dashboard', label: 'Resumen', icon: LayoutDashboard }, { id: 'orders', label: 'Órdenes', icon: ClipboardList }, { id: 'customers', label: 'Clientes', icon: Users }, { id: 'services', label: 'Servicios', icon: Tags }, { id: 'cash', label: 'Caja', icon: Wallet }, ...(manage ? [{ id: 'team', label: 'Equipo', icon: UserRoundCog }, { id: 'audit', label: 'Auditoría', icon: History }] : []), ...(identity.platformAdmin ? [{ id: 'platform', label: 'Plataforma', icon: ShieldCheck }] : [])];
+  function navigate(id: string) { setPage(id); setMenu(false); }
+  return <div className="app"><aside className={menu ? 'sidebar open' : 'sidebar'}><a className="brand" href="#" onClick={e => { e.preventDefault(); navigate('dashboard'); }}><WashingMachine/>Lavanda<span>GESTIÓN</span></a><div className="workspace"><span>ESPACIO DE TRABAJO</span><select aria-label="Empresa activa" value={company} onChange={e => { selectCompany(e.target.value); setCompany(e.target.value); setPage('dashboard'); }}>{identity.memberships.map(m => <option value={m.companyId} key={m.companyId}>{m.companyName}</option>)}</select><small>Sede principal · Perú</small></div><nav aria-label="Menú principal">{nav.map(item => <button key={item.id} className={page === item.id ? 'active' : ''} onClick={() => navigate(item.id)} aria-current={page === item.id ? 'page' : undefined}><item.icon size={20}/>{item.label}</button>)}</nav><div className="sidebar-bottom"><div className="avatar">{identity.name.charAt(0).toUpperCase()}</div><div><strong>{identity.name}</strong><small>{membership?.role === 'owner' ? 'Propietario' : membership?.role === 'manager' ? 'Administrador' : 'Mostrador'}</small></div><Button variant="ghost" aria-label="Cerrar sesión" onClick={async () => { try { await api('/auth/logout', 'POST'); setIdentity(null); } catch (e) { setError((e as Error).message); } }}><LogOut/></Button></div></aside><div className="main-shell"><header className="topbar"><Button variant="ghost" className="mobile-menu" aria-label="Abrir menú" aria-expanded={menu} onClick={() => setMenu(!menu)}><Menu/></Button><span>{nav.find(n => n.id === page)?.label}</span><span className="topbar-date">{new Intl.DateTimeFormat('es-PE', { dateStyle: 'full', timeZone: 'America/Lima' }).format(new Date())}</span></header><main className="content" key={`${company}:${page}`}>{error && <p className="error">{error}</p>}{page === 'platform' && identity.platformAdmin ? <Platform/> : !membership ? <p>No tienes una empresa asignada.</p> : <>{page === 'dashboard' && <Dashboard manage={manage} openOrders={() => navigate('orders')}/>} {page === 'orders' && <Orders manage={manage} companyName={membership.companyName}/>} {page === 'customers' && <Customers/>} {page === 'services' && <Services manage={manage}/>} {page === 'cash' && <CashPage manage={manage}/>} {page === 'team' && manage && <Team owner={membership.role === 'owner'}/>} {page === 'audit' && manage && <AuditPage/>}</>}</main><footer className="app-footer">Lavanda · Un día de trabajo más simple.</footer></div></div>;
+}
+createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);

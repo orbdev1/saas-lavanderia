@@ -1,0 +1,21 @@
+{
+  "name": "lavanderia",
+  "private": true,
+  "packageManager": "pnpm@12.18.0",
+  "engines": {
+    "node": "26.13.0"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @lav/api --filter @lav/web dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @lav/api test",
+    "test:e2e": "playwright test",
+    "db:up": "docker compose up -d",
+    "db:migrate": "pnpm --filter @lav/api migrate",
+    "admin": "pnpm --filter @lav/api admin"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.0"
+  }
+}
