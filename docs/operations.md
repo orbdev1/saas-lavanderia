@@ -9,16 +9,22 @@ Nuevas modificaciones deben ser archivos numerados nuevos. Nunca editar un archi
 ## VPS Linux
 
 1. Instalar Docker Engine y Compose. Configurar DNS del dominio al VPS y puertos 80/443.
-2. Copiar `infra/.env.example` a `.env` en la raíz. Usar contraseña aleatoria, dominio y credenciales reales de correo. Si la contraseña contiene caracteres reservados, codificarlos en `DATABASE_URL`.
+2. Copiar `infra/.env.example` a `.env` en la raíz. Configurar dominio, credenciales separadas de aplicación/migración y clave MFA persistente. Si la contraseña contiene caracteres reservados, codificarlos en la URL.
 3. `docker compose -f compose.prod.yaml build`
 4. `docker compose -f compose.prod.yaml up -d db`
-5. `docker compose -f compose.prod.yaml run --rm api node dist/migrate.js`
+5. `docker compose -f compose.prod.yaml --profile tools run --rm migrate`. Crear `laundry_app` con su contraseña y ejecutar `infra/runtime-grants.sql` como propietario.
 6. `docker compose -f compose.prod.yaml up -d`
-7. Verificar `https://DOMINIO/api/health`, registro/login, correo y flujo completo.
+7. Verificar `https://DOMINIO/api/health`, registro/login, MFA y flujo completo.
 
-Caddy sirve la web y enruta `/api` a Fastify; obtiene HTTPS automáticamente. PostgreSQL y API no publican puertos del host. Fastify confía únicamente en el primer proxy; mantener API inaccesible directamente. Node corre como usuario no root. La imagen API conserva herramientas de build para simplicidad inicial; separar artefactos/dependencias es una optimización posterior.
+Caddy sirve la web y enruta `/api` a Go; obtiene HTTPS automáticamente. PostgreSQL y
+API no publican puertos del host. Configurar `TRUSTED_PROXY_CIDR` únicamente con la
+red real del proxy; por defecto se ignora `X-Forwarded-For`. Go corre como usuario
+no root, con filesystem de solo lectura y límites de recursos. La imagen final
+contiene el binario y migraciones, sin compilador.
 
-Los builds de web y API son independientes. Shared se incluye en ambos. Para actualizar, ejecutar pruebas, construir, aplicar migraciones y recrear los servicios afectados. El despliegue en VPS no ha sido ejecutado por el agente: requiere dominio y secretos del operador.
+Los builds de web y API son independientes. Para actualizar, ejecutar pruebas,
+construir, aplicar migraciones y permisos, y recrear los servicios afectados.
+El despliegue en VPS no se ha ejecutado: requiere infraestructura y secretos del operador.
 
 ## Backups y restauración (Linux)
 
@@ -46,7 +52,10 @@ Validar conteos, sumas, relaciones y login con una API de staging apuntando a es
 Validación local realizada: backup `pg_dump -Fc` de la base de pruebas y restauración con `pg_restore --exit-on-error` en una base nueva. Conteos y sumas de órdenes/pagos coincidieron; la base temporal de restauración se eliminó después. Esta comprobación local no sustituye la prueba con el almacenamiento externo del VPS.
 
 - Healthcheck HTTP `/api/health`, logs `docker compose -f compose.prod.yaml logs --tail=100 api`, espacio en disco y backups.
-- Limpieza diaria: `DELETE FROM sessions WHERE expires_at < now(); DELETE FROM tokens WHERE expires_at < now();` mediante psql en tarea programada.
+- Limpieza diaria: sesiones/tokens vencidos, `mfa_enrollments` vencidos y
+  `login_limits` con `window_start < now()-interval '2 days'`, mediante tarea SQL.
 - No borrar órdenes/pagos/auditoría; archivar con política explícita cuando sea necesario.
-- Mantener actualizaciones de Node, PostgreSQL y dependencias controladas con lockfile y pruebas.
-- `.env` y backups no se versionan. Probar restauración antes de comenzar el piloto real.
+- Mantener actualizaciones de Go, Node, PostgreSQL y dependencias controladas con lockfiles y pruebas.
+- `.env` y backups no se versionan. Respaldar la clave MFA separadamente y con
+  protección equivalente: sin ella no se pueden descifrar los autenticadores.
+  Probar restauración antes de comenzar el piloto real.

@@ -1,0 +1,18 @@
+# Instancia temporal LOCAL para restaurar y verificar antes del cambio de versión.
+# Usar junto con compose.yaml y el mismo nombre de proyecto.
+services:
+  upgrade-db:
+    image: postgres:18.7-trixie
+    profiles: ["upgrade"]
+    environment:
+      POSTGRES_USER: laundry
+      POSTGRES_PASSWORD: laundry_local
+      POSTGRES_DB: laundry
+    ports: ["127.0.0.1:5434:5432"]
+    volumes: ["pgdata18:/var/lib/postgresql"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U laundry -d laundry"]
+      interval: 3s
+      retries: 20
+volumes:
+  pgdata18:

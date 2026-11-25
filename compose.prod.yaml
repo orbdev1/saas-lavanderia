@@ -1,12 +1,12 @@
 services:
   db:
-    image: postgres:17-alpine
+    image: postgres:18.7-trixie
     restart: unless-stopped
     environment:
       POSTGRES_DB: laundry
       POSTGRES_USER: laundry
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
-    volumes: ["pgdata:/var/lib/postgresql/data"]
+    volumes: ["pgdata18:/var/lib/postgresql"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U laundry -d laundry"]
       interval: 5s
@@ -20,8 +20,15 @@ services:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL}
       APP_ORIGIN: https://${DOMAIN:?Set DOMAIN}
       NODE_ENV: production
-      MAIL_API_KEY: ${MAIL_API_KEY:?Set MAIL_API_KEY}
-      MAIL_FROM: ${MAIL_FROM:?Set MAIL_FROM}
+      MFA_KEY: ${MFA_KEY:?Set persistent MFA encryption key}
+      GO_LISTEN_ADDR: 0.0.0.0:3000
+      TRUSTED_PROXY_CIDR: ${TRUSTED_PROXY_CIDR:-}
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 128
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
     depends_on:
       db: { condition: service_healthy }
   web:
@@ -34,7 +41,21 @@ services:
     ports: ["80:80", "443:443", "443:443/udp"]
     volumes: ["caddy_data:/data", "caddy_config:/config"]
     depends_on: [api]
+    mem_limit: 256m
+    cpus: 0.5
+  migrate:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: infra/api.Dockerfile
+    command: ["lavanda", "migrate"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL}
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:?Set migration credential}
+    depends_on:
+      db: { condition: service_healthy }
 volumes:
   pgdata:
+  pgdata18:
   caddy_data:
   caddy_config:

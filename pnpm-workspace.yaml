@@ -1,6 +1,7 @@
 packages:
   - apps/api
   - apps/web
+  - apps/server
   - packages/shared
 allowBuilds:
   argon2: true

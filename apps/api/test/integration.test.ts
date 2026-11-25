@@ -29,6 +29,10 @@ beforeAll(async () => {
 });
 afterAll(async () => { await app?.close(); await pool.end(); });
 describe('aislamiento y flujo financiero con PostgreSQL real', () => {
+  it('limita tiempo de consultas y esperas de bloqueo en las conexiones de API', async () => {
+    expect(await one(db, sql`SHOW statement_timeout`)).toEqual({ statement_timeout: '15s' });
+    expect(await one(db, sql`SHOW lock_timeout`)).toEqual({ lock_timeout: '5s' });
+  });
   it('bloquea escrituras de otro origen y acceso anónimo', async () => {
     expect((await app.inject({ method: 'POST', url: '/api/auth/logout', headers: { origin: 'https://evil.example' } })).statusCode).toBe(403);
     expect((await app.inject('/api/customers')).statusCode).toBe(401);
@@ -42,6 +46,14 @@ describe('aislamiento y flujo financiero con PostgreSQL real', () => {
     expect((await call(b, 'POST', '/orders', { customerId: customer, dueAt: new Date().toISOString(), items: [{ serviceId: service, quantity: 2 }], requestId: crypto.randomUUID() })).statusCode).toBe(404);
     await expect(db.execute(sql`INSERT INTO order_items(company_id,order_id,service_id,name,unit,actual,charged,price,total) VALUES (${b.company},${crypto.randomUUID()},${service},'x','kg',1,1,100,100)`)).rejects.toThrow();
   });
+  it('busca clientes por nombre o celular dentro de la empresa y escapa comodines', async () => {
+    expect((await call(a, 'GET', '/customers?search=alpha')).json().map((c: { id: string }) => c.id)).toEqual([customer]);
+    expect((await call(a, 'GET', '/customers?search=999999999')).json().map((c: { id: string }) => c.id)).toEqual([customer]);
+    expect((await call(b, 'GET', '/customers?search=alpha')).json()).toEqual([]);
+    expect((await call(a, 'GET', '/customers?search=%25')).json()).toEqual([]);
+    expect((await call(a, 'GET', '/customers?search=_')).json()).toEqual([]);
+    expect((await call(a, 'GET', `/customers?search=${'a'.repeat(121)}`)).statusCode).toBe(400);
+  });
   it('agrupa un servicio y aplica el mínimo una sola vez; conserva precios', async () => {
     order = await newOrder(a, [{ serviceId: service, quantity: 1 }, { serviceId: service, quantity: 1 }]);
     const detail = (await call(a, 'GET', `/orders/${order}`)).json();
@@ -50,6 +62,34 @@ describe('aislamiento y flujo financiero con PostgreSQL real', () => {
     expect((await call(b, 'POST', `/orders/${order}/payments`, { amount: 100, method: 'yape', requestId: crypto.randomUUID() })).statusCode).toBe(404);
     await call(a, 'PUT', `/services/${service}`, { name: 'Lavado actualizado', unit: 'kg', price: 900, minimum: 3 });
     expect((await call(a, 'GET', `/orders/${order}`)).json().total).toBe(1800);
+  });
+  it('usa UUIDv7 en registros nuevos y admite relaciones con UUIDv4 existentes', async () => {
+    expect(a.user[14]).toBe('7');
+    expect(customer[14]).toBe('7');
+    const legacyId = crypto.randomUUID();
+    await db.execute(sql`INSERT INTO customers(id,company_id,name) VALUES (${legacyId},${a.company},'Cliente anterior UUIDv4')`);
+    const result = await call(a, 'POST', '/orders', { customerId: legacyId, dueAt: new Date().toISOString(), items: [{ serviceId: service, quantity: 2.45 }], requestId: crypto.randomUUID() });
+    expect(result.statusCode, result.body).toBe(201);
+    expect(result.json().id[14]).toBe('7');
+    expect((await call(a, 'GET', `/orders/${result.json().id}`)).json().customerId).toBe(legacyId);
+  });
+  it('acepta piezas enteras y rechaza fracciones y kilos de tres decimales', async () => {
+    const services = (await call(a, 'GET', '/services')).json();
+    const piece = services.find((s: { unit: string }) => s.unit === 'piece');
+    const input = { customerId: customer, dueAt: new Date().toISOString(), items: [{ serviceId: piece.id, quantity: 1 }], requestId: crypto.randomUUID() };
+    expect((await call(a, 'POST', '/orders', input)).statusCode).toBe(201);
+    expect((await call(a, 'POST', '/orders', { ...input, requestId: crypto.randomUUID(), items: [{ serviceId: piece.id, quantity: 1.5 }] })).statusCode).toBe(400);
+    expect((await call(a, 'POST', '/orders', { ...input, requestId: crypto.randomUUID(), items: [{ serviceId: service, quantity: 2.451 }] })).statusCode).toBe(400);
+  });
+  it('exporta solo clientes de la empresa autorizada y registra auditoría', async () => {
+    const exported = await call(a, 'GET', '/customers/export');
+    expect(exported.statusCode).toBe(200);
+    expect(exported.headers['content-type']).toContain('text/csv');
+    expect(exported.body).toContain('Cliente Alpha');
+    expect(exported.body).not.toContain('password');
+    expect((await call(b, 'GET', '/customers/export')).body).not.toContain('Cliente Alpha');
+    expect((await call({ ...a, company: b.company }, 'GET', '/customers/export')).statusCode).toBe(403);
+    expect(await one(db, sql`SELECT id FROM audit WHERE company_id=${a.company} AND actor_id=${a.user} AND action='customers.exported'`)).toBeDefined();
   });
   it('los reintentos concurrentes no duplican órdenes ni pagos', async () => {
     const input = { customerId: customer, dueAt: new Date().toISOString(), items: [{ serviceId: service, quantity: 2 }], requestId: crypto.randomUUID() };
@@ -90,6 +130,8 @@ describe('aislamiento y flujo financiero con PostgreSQL real', () => {
     expect((await call(staff, 'GET', '/orders')).statusCode).toBe(200);
     expect((await call(staff, 'POST', '/services', { name: 'No permitido', unit: 'kg', price: 100, minimum: 0 })).statusCode).toBe(403);
     expect((await call(staff, 'GET', '/audit')).statusCode).toBe(403);
+    expect((await call(staff, 'GET', '/customers/export')).statusCode).toBe(403);
+    expect((await call(staff, 'GET', '/reports/export')).statusCode).toBe(403);
     expect((await call(a, 'DELETE', `/team/${b.user}`)).statusCode).toBe(200);
     expect((await call(staff, 'GET', '/orders')).statusCode).toBe(403);
   });

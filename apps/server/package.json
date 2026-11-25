@@ -1,0 +1,13 @@
+{
+  "name": "@lav/server",
+  "private": true,
+  "scripts": {
+    "dev": "go run ./cmd/api dev",
+    "build": "go build -o dist/ ./cmd/api",
+    "typecheck": "go vet ./...",
+    "test": "go test ./...",
+    "migrate": "go run ./cmd/api migrate",
+    "admin": "go run ./cmd/api admin",
+    "test:e2e-server": "go run ./cmd/api test-serve"
+  }
+}

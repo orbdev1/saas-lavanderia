@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { id, money } from '@lav/shared';
 import { db, sql, rows, one } from './db.js';
 import { tenant, platform, audit, assert } from './security.js';
+import { csvDocument } from './csv.js';
 
 export async function reportRoutes(app: FastifyInstance) {
   app.get('/api/reports', async request => {
@@ -12,10 +13,15 @@ export async function reportRoutes(app: FastifyInstance) {
   app.get('/api/reports/export', async (request, reply) => {
     const ctx = await tenant(request, ['owner', 'manager']);
     const data = await rows(db, sql`SELECT o.number,c.name AS customer,o.status,o.total,o.paid,o.total-o.paid AS balance,o.created_at,o.due_at FROM orders o JOIN customers c ON c.id=o.customer_id AND c.company_id=o.company_id WHERE o.company_id=${ctx.companyId} ORDER BY o.number`);
-    const escape = (v: unknown) => '"' + String(v instanceof Date ? v.toISOString() : v).replace(/^[=+@\-\t\r]/, "'$&").replaceAll('"', '""') + '"';
     const header = ['number', 'customer', 'status', 'total', 'paid', 'balance', 'created_at', 'due_at'];
     await audit(db, ctx.actor.id, ctx.companyId, 'report.exported', null);
-    return reply.header('Content-Type', 'text/csv; charset=utf-8').header('Content-Disposition', 'attachment; filename="ordenes-centimos.csv"').send('\uFEFF' + [header.join(','), ...data.map(row => header.map(key => escape(row[key])).join(','))].join('\r\n'));
+    return reply.header('Content-Type', 'text/csv; charset=utf-8').header('Content-Disposition', 'attachment; filename="ordenes-centimos.csv"').send(csvDocument(header, data));
+  });
+  app.get('/api/customers/export', async (request, reply) => {
+    const ctx = await tenant(request, ['owner', 'manager']);
+    const data = await rows(db, sql`SELECT name AS nombre,phone AS celular,document AS documento,notes AS notas FROM customers WHERE company_id=${ctx.companyId} ORDER BY name,id`);
+    await audit(db, ctx.actor.id, ctx.companyId, 'customers.exported', null, { count: data.length });
+    return reply.header('Content-Type', 'text/csv; charset=utf-8').header('Content-Disposition', 'attachment; filename="clientes.csv"').send(csvDocument(['nombre', 'celular', 'documento', 'notas'], data));
   });
   app.get('/api/audit', async request => { const ctx = await tenant(request, ['owner', 'manager']); return rows(db, sql`SELECT a.id,a.action,a.entity_id AS "entityId",a.detail,a.created_at AS "createdAt",u.name AS actor FROM audit a JOIN users u ON u.id=a.actor_id WHERE a.company_id=${ctx.companyId} ORDER BY a.created_at DESC LIMIT 200`); });
   app.get('/api/platform/companies', async request => {

@@ -5,7 +5,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:18.7-trixie
         env:
           POSTGRES_USER: laundry
           POSTGRES_PASSWORD: laundry_test
@@ -16,6 +16,10 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/server/go.mod
+          cache-dependency-path: apps/server/go.sum
       - uses: actions/setup-node@v4
         with:
           node-version: 26.13.0

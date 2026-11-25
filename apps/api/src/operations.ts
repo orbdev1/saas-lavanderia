@@ -8,7 +8,15 @@ const paramId = (params: unknown) => z.object({ id }).parse(params).id;
 const orderColumns = sql`o.id,o.number,o.customer_id AS "customerId",c.name AS "customerName",c.phone,o.status,o.total,o.paid,o.due_at AS "dueAt",o.notes,o.created_at AS "createdAt"`;
 async function lockCompany(tx: Executor, companyId: string) { await tx.execute(sql`SELECT id FROM companies WHERE id=${companyId} FOR UPDATE`); }
 export async function operationRoutes(app: FastifyInstance) {
-  app.get('/api/customers', async request => { const ctx = await tenant(request); return rows(db, sql`SELECT id,name,phone,document,notes FROM customers WHERE company_id=${ctx.companyId} ORDER BY name LIMIT 2000`); });
+  app.get('/api/customers', async request => {
+    const ctx = await tenant(request);
+    const { search } = z.object({ search: z.string().trim().max(120).optional() }).parse(request.query);
+    if (search === undefined) return rows(db, sql`SELECT id,name,phone,document,notes FROM customers WHERE company_id=${ctx.companyId} ORDER BY name LIMIT 2000`);
+    const literal = search.replace(/[\\%_]/g, '\\$&');
+    return rows(db, sql`SELECT id,name,phone,document,notes FROM customers
+      WHERE company_id=${ctx.companyId} AND (name ILIKE ${`%${literal}%`} OR phone ILIKE ${`%${literal}%`})
+      ORDER BY name,id LIMIT 30`);
+  });
   app.post('/api/customers', async (request, reply) => {
     const ctx = await tenant(request); const input = customerInput.parse(request.body);
     return reply.code(201).send(await db.transaction(async tx => {
@@ -27,6 +35,7 @@ export async function operationRoutes(app: FastifyInstance) {
   app.post('/api/services', async (request, reply) => {
     const ctx = await tenant(request, ['owner', 'manager']); const input = serviceInput.parse(request.body);
     return reply.code(201).send(await db.transaction(async tx => {
+      await lockCompany(tx, ctx.companyId);
       const result = (await one(tx, sql`INSERT INTO services(company_id,name,unit,price,minimum,active) VALUES (${ctx.companyId},${input.name},${input.unit},${input.price},${input.minimum},${input.active}) RETURNING id`))!;
       await audit(tx, ctx.actor.id, ctx.companyId, 'service.created', result.id as string, input); return result;
     }));
@@ -34,6 +43,7 @@ export async function operationRoutes(app: FastifyInstance) {
   app.put('/api/services/:id', async request => {
     const ctx = await tenant(request, ['owner', 'manager']); const serviceId = paramId(request.params); const input = serviceInput.parse(request.body);
     return db.transaction(async tx => {
+      await lockCompany(tx, ctx.companyId);
       const result = await one(tx, sql`UPDATE services SET name=${input.name},unit=${input.unit},price=${input.price},minimum=${input.minimum},active=${input.active} WHERE id=${serviceId} AND company_id=${ctx.companyId} RETURNING id`);
       assert(result, 404, 'Servicio no encontrado'); await audit(tx, ctx.actor.id, ctx.companyId, 'service.updated', serviceId, input); return result;
     });
@@ -47,7 +57,7 @@ export async function operationRoutes(app: FastifyInstance) {
     const ctx = await tenant(request); const orderId = paramId(request.params);
     const order = await one(db, sql`SELECT ${orderColumns} FROM orders o JOIN customers c ON c.id=o.customer_id AND c.company_id=o.company_id WHERE o.company_id=${ctx.companyId} AND o.id=${orderId}`);
     assert(order, 404, 'Orden no encontrada');
-    const items = await rows(db, sql`SELECT name,unit,actual,charged,price,total FROM order_items WHERE company_id=${ctx.companyId} AND order_id=${orderId} ORDER BY name`);
+    const items = await rows(db, sql`SELECT service_id AS "serviceId",name,unit,actual,charged,price,total FROM order_items WHERE company_id=${ctx.companyId} AND order_id=${orderId} ORDER BY name`);
     const payments = await rows(db, sql`SELECT id,amount,method,reference,reason,created_at AS "createdAt" FROM payments WHERE company_id=${ctx.companyId} AND order_id=${orderId} ORDER BY created_at DESC`);
     return { ...order, items, payments };
   });
@@ -64,7 +74,7 @@ export async function operationRoutes(app: FastifyInstance) {
       for (const [serviceId, milli] of grouped) {
         const service = await one<Service>(tx, sql`SELECT id,name,unit,price,minimum::float8 AS minimum,active FROM services WHERE id=${serviceId} AND company_id=${ctx.companyId} FOR SHARE`);
         assert(service?.active, 400, 'Servicio no disponible');
-        assert(service.unit !== 'piece' || milli % 1000 === 0, 400, 'Las piezas deben ser enteras');
+        assert(service.unit !== 'piece' || input.items.filter(i => i.serviceId === serviceId).every(i => Number.isInteger(i.quantity)), 400, 'Las piezas deben ser enteras');
         items.push({ service, ...priceLine(milli / 1000, service.minimum, service.price) });
       }
       const total = items.reduce((sum, item) => sum + item.total, 0);
@@ -78,6 +88,7 @@ export async function operationRoutes(app: FastifyInstance) {
   app.patch('/api/orders/:id/status', async request => {
     const ctx = await tenant(request); const orderId = paramId(request.params); const { status } = z.object({ status: z.enum(['processing', 'ready', 'delivered']) }).parse(request.body);
     return db.transaction(async tx => {
+      await lockCompany(tx, ctx.companyId);
       const order = await one<Order>(tx, sql`SELECT status,total,paid FROM orders WHERE id=${orderId} AND company_id=${ctx.companyId} FOR UPDATE`);
       assert(order, 404, 'Orden no encontrada');
       const next: Record<string, string> = { received: 'processing', processing: 'ready', ready: 'delivered' };
@@ -91,6 +102,7 @@ export async function operationRoutes(app: FastifyInstance) {
     const ctx = await tenant(request, ['owner', 'manager']); const orderId = paramId(request.params);
     const input = reasonInput.extend({ dueAt: z.iso.datetime(), notes: z.string().max(2000) }).parse(request.body);
     return db.transaction(async tx => {
+      await lockCompany(tx, ctx.companyId);
       const result = await one(tx, sql`UPDATE orders SET due_at=${input.dueAt},notes=${input.notes} WHERE company_id=${ctx.companyId} AND id=${orderId} AND status NOT IN ('cancelled','delivered') RETURNING id`);
       assert(result, 409, 'No se puede corregir esta orden'); await audit(tx, ctx.actor.id, ctx.companyId, 'order.corrected', orderId, input); return result;
     });
@@ -98,6 +110,7 @@ export async function operationRoutes(app: FastifyInstance) {
   app.post('/api/orders/:id/cancel', async request => {
     const ctx = await tenant(request, ['owner', 'manager']); const orderId = paramId(request.params); const input = reasonInput.parse(request.body);
     return db.transaction(async tx => {
+      await lockCompany(tx, ctx.companyId);
       const order = await one<Order>(tx, sql`SELECT status,paid FROM orders WHERE company_id=${ctx.companyId} AND id=${orderId} FOR UPDATE`);
       assert(order, 404, 'Orden no encontrada'); assert(!['delivered', 'cancelled'].includes(order.status) && order.paid === 0, 409, 'Devuelve los abonos antes de anular; una orden entregada no se anula');
       await tx.execute(sql`UPDATE orders SET status='cancelled' WHERE company_id=${ctx.companyId} AND id=${orderId}`);

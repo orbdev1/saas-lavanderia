@@ -6,16 +6,19 @@
     "node": "26.13.0"
   },
   "scripts": {
-    "dev": "pnpm --parallel --filter @lav/api --filter @lav/web dev",
+    "dev": "pnpm --parallel --filter @lav/server --filter @lav/web dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm --filter @lav/api test",
+    "test": "pnpm --filter @lav/api test && node scripts/test-go.mjs",
+    "test:go": "node scripts/test-go.mjs",
     "test:e2e": "playwright test",
     "db:up": "docker compose up -d",
-    "db:migrate": "pnpm --filter @lav/api migrate",
-    "admin": "pnpm --filter @lav/api admin"
+    "db:migrate": "pnpm --filter @lav/server migrate",
+    "admin": "pnpm --filter @lav/server admin"
   },
   "devDependencies": {
-    "@playwright/test": "^1.65.0"
+    "@playwright/test": "^1.65.0",
+    "@types/pg": "^8.23.1",
+    "pg": "^8.23.1"
   }
 }
